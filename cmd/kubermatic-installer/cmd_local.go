@@ -141,9 +141,9 @@ func localKindCommand(logger *logrus.Logger, opt LocalOptions) *cobra.Command {
 	return cmd
 }
 
-func localKind(logger *logrus.Logger, dir string) (ctrlruntimeclient.Client, context.CancelFunc) {
+func localKind(logger *logrus.Logger, dir string, opts LocalOptions) (ctrlruntimeclient.Client, context.CancelFunc) {
 	kindConfig := filepath.Join(dir, "kind-config.yaml")
-	if err := os.WriteFile(kindConfig, []byte(kindConfigContent), 0600); err != nil {
+	if err := os.WriteFile(kindConfig, []byte(getKindConfigContent(logger)), 0600); err != nil {
 		logger.Fatalf("failed to create 'kind' config: %v", err)
 	}
 
@@ -371,7 +371,7 @@ func localKindFunc(logger *logrus.Logger, opt LocalOptions) cobraFuncE {
 			logger.Fatal("Failed to find examples directory, please ensure it and the charts directory from the KKP download archive remain together with the kubermatic-installer.")
 		}
 
-		kubeClient, cancel := localKind(logger, exampleDir)
+		kubeClient, cancel := localKind(logger, exampleDir, opt)
 		defer cancel()
 
 		kubeconfig := filepath.Join(exampleDir, "kube-config.yaml")
@@ -446,7 +446,7 @@ func initKindSeedSecret(kubeClient ctrlruntimeclient.Client, logger *logrus.Logg
 	if err != nil {
 		logger.Fatalf("Failed to initialize seed secret: %v", err)
 	}
-	addrRe := regexp.MustCompile(`([ ]*server:) https://127.0.0.1:[0-9]*`)
+	addrRe := regexp.MustCompile(`([ ]*server:) https://.*:[0-9]*`)
 	internalKubeconfig := addrRe.ReplaceAllString(string(k), fmt.Sprintf(`$1 https://%v:6443`, ip))
 
 	if err := os.WriteFile(internalKubeconfigPath, []byte(internalKubeconfig), 0600); err != nil {
@@ -463,6 +463,25 @@ func initKindPreset(logger *logrus.Logger, internalKubeconfigPath string) kuberm
 	}
 	kindLocalPreset.Spec.Kubevirt.Kubeconfig = base64.StdEncoding.EncodeToString(k)
 	return kindLocalPreset
+}
+
+func getKindConfigContent(logger *logrus.Logger) string {
+	if gwip, err := gateway.DiscoverGateway(); err != nil {
+		logger.Errorf("Failed to determine default gateway IP for kind config: %v\nReverting back to 127.0.0.1", err)
+		return "127.0.0.1"
+	} else {
+		addrs, err := net.InterfaceAddrs()
+		if err != nil {
+			logger.Fatalf("Failed to list interface addresses, please use --endpoint flag: %v", err)
+		}
+		for _, a := range addrs {
+			if ipnet, ok := a.(*net.IPNet); ok && !ipnet.IP.IsLoopback() && ipnet.Contains(gwip) {
+				return fmt.Sprintf(kindConfigContent, ipnet.IP)
+			}
+		}
+	}
+	logger.Errorf("Failed to determine default gateway IP for kind config\nReverting back to 127.0.0.1")
+	return "127.0.0.1"
 }
 
 func randomString(n int) string {
